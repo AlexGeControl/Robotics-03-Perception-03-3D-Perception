@@ -9,6 +9,7 @@
 
 # Author: Alex Ge
 import pcl
+import numpy as np
 
 from pcl_helper import XYZRGB_to_XYZ
 
@@ -62,11 +63,16 @@ class EuclideanSegmenter():
         # 1. Segment objects:
         cluster_indices = self._segmenter.Extract()
 
-        # 2. Generate positions for markers:
+        # 2. Generate representative point for object:
         cluster_reps = []
         for idx_points in cluster_indices:
-            rep_position = list(self._cloud[idx_points[0]])
-            rep_position[2] += 0.2
+            object_cloud = self._cloud.extract(idx_points)
+
+            # Use centroid as representative point:
+            rep_position = np.mean(
+                object_cloud.to_array(),
+                axis=0
+            )[:3]
 
             cluster_reps.append(rep_position)
 

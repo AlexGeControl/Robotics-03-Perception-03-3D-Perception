@@ -2,10 +2,11 @@
 
 # Set up session:
 import pickle
+import numpy as np
 
 import rospy
 import tf
-from geometry_msgs.msg import Pose
+from geometry_msgs.msg import Pose, Point
 from std_msgs.msg import Float64
 from std_msgs.msg import Int32
 from std_msgs.msg import String
@@ -24,26 +25,94 @@ from visualization_msgs.msg import Marker
 
 from sklearn.preprocessing import LabelEncoder
 
+# Parse place configuration:
+def parse_object_place_locations():
+    group_arm_position_list = rospy.get_param('/dropbox')
+
+    group_arm_position_dict = {
+        group_arm_position['group']: dict(
+            arm_name = group_arm_position['name'],
+            place_position = group_arm_position['position']
+        )
+        for group_arm_position in group_arm_position_list
+    }
+
+    object_group_list = rospy.get_param('/object_list')
+
+    object_group_dict = {
+        object_group['name']: group_arm_position_dict[
+            object_group['group']
+        ]
+        for object_group in object_group_list
+    }
+
+    return object_group_dict
+
 # Helper function to get surface normals
 def get_normals(cloud):
     get_normals_prox = rospy.ServiceProxy('/pr2_feature_extractor/get_normals', GetNormals)
     return get_normals_prox(cloud).cluster
 
-# Helper function to create a yaml friendly dictionary from ROS messages
-def make_yaml_dict(test_scene_num, arm_name, object_name, pick_pose, place_pose):
-    yaml_dict = {}
-    yaml_dict["test_scene_num"] = test_scene_num.data
-    yaml_dict["arm_name"]  = arm_name.data
-    yaml_dict["object_name"] = object_name.data
-    yaml_dict["pick_pose"] = message_converter.convert_ros_message_to_dictionary(pick_pose)
-    yaml_dict["place_pose"] = message_converter.convert_ros_message_to_dictionary(place_pose)
-    return yaml_dict
-
 # Helper function to output to yaml file
-def send_to_yaml(yaml_filename, dict_list):
-    data_dict = {"object_list": dict_list}
+def dump_as_yaml(yaml_filename, dict_list):
+    data_dict = {
+        "object_list": dict_list
+    }
+
     with open(yaml_filename, 'w') as outfile:
         yaml.dump(data_dict, outfile, default_flow_style=False)
+
+class PR2PickPlace():
+    """ Wrapper for pick and place request
+    """
+    @staticmethod
+    def create_point(position):
+        """ Create point from input position
+        """
+        point = Point()
+
+        position = np.array(
+            position,
+            dtype = np.float32
+        )
+
+        point.x = np.asscalar(position[0])
+        point.y = np.asscalar(position[1])
+        point.z = np.asscalar(position[2])
+
+        return point
+
+    @staticmethod
+    def create_yaml_dict(request):
+        """ Create yaml dict from PickPlace request
+        """
+        yaml_dict = {}
+
+        yaml_dict["test_scene_num"] = request.test_scene_num.data
+        yaml_dict["object_name"] = np.asscalar(request.object_name.data)
+        yaml_dict["arm_name"]  = request.arm_name.data
+        yaml_dict["pick_pose"] = message_converter.convert_ros_message_to_dictionary(request.pick_pose)
+        yaml_dict["place_pose"] = message_converter.convert_ros_message_to_dictionary(request.place_pose)
+
+        return yaml_dict
+
+    def __init__(
+        self,
+        test_scene_num,
+        object_name,
+        arm_name,
+        pick_position,
+        place_position
+    ):
+        self.request = PickPlaceRequest()
+
+        self.request.test_scene_num.data = test_scene_num
+        self.request.object_name.data = object_name
+        self.request.arm_name.data = arm_name
+        self.request.pick_pose.position = PR2PickPlace.create_point(pick_position)
+        self.request.place_pose.position = PR2PickPlace.create_point(place_position)
+
+        self.yaml_dict = PR2PickPlace.create_yaml_dict(self.request)
 
 class PR2Mover():
     """ Segmented PCL classifier
@@ -63,6 +132,9 @@ class PR2Mover():
         self._encoder.classes_ = model['classes']
         # 3. Feature scaler:
         self._scaler = model['scaler']
+
+        # Parse place configuration:
+        self._place_config = parse_object_place_locations()
 
         # Initialize ros node:
         rospy.init_node('pr2_mover')
@@ -166,9 +238,21 @@ class PR2Mover():
         # 7. Detect objects:
         detected_objects = []
         detected_object_labels = []
-        for idx_object, idx_points in enumerate(cluster_indices):
+
+        pick_place_requests = []
+        pick_place_dicts = []
+
+        for idx_object, (idx_points, object_center) in enumerate(zip(cluster_indices, cluster_reps)):
             # Grab the points for the cluster from the extracted outliers (cloud_objects)
             pcl_object = pcl_objects.extract(idx_points)
+
+            # Denoise again:
+            outlier_filter = OutlierFilter(
+                pcl_object,
+                k = 50,
+                factor = 1
+            )
+            pcl_object = outlier_filter.filter()
 
             # Convert the cluster from pcl to ROS using helper function
             ros_cloud_object = pcl_to_ros(pcl_object)
@@ -198,9 +282,27 @@ class PR2Mover():
                 detected_object
             )
             detected_object_labels.append(label)
+
+            # Create PickPlace requests:
+            pr2_pick_place = PR2PickPlace(
+                test_scene_num = 1,
+                object_name = label,
+                arm_name = self._place_config[label]['arm_name'],
+                pick_position = object_center,
+                place_position = self._place_config[label]['place_position']
+            )
+            pick_place_requests.append(
+                pr2_pick_place.request
+            )
+            pick_place_dicts.append(
+                pr2_pick_place.yaml_dict
+            )
+
             # Publish object label into RViz
+            marker_position = object_center
+            marker_position[2] += 0.25
             self._pub_pcl_labels.publish(
-                make_label(label,cluster_reps[idx_object], idx_object)
+                make_label(label, marker_position, idx_object)
             )
 
         # 8. Prompt:
@@ -210,6 +312,13 @@ class PR2Mover():
                 detected_object_labels
             )
         )
+
+        #  9. Dump as YAML file:
+        dump_as_yaml(
+            "{}-place-request.yaml".format(rospy.Time.now().to_sec()),
+            pick_place_dicts
+        )
+
         self._pub_pcl_objects.publish(detected_objects)
 
 # Callback function for your Point Cloud Subscriber

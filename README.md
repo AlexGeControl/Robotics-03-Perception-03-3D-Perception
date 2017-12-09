@@ -111,11 +111,17 @@ Separate objects are localized using the following <a href="pr2_robot/scripts/pc
           # 1. Segment objects:
           cluster_indices = self._segmenter.Extract()
 
-          # 2. Generate positions for markers:
+          # 2. Generate representative point for object:
           cluster_reps = []
           for idx_points in cluster_indices:
-              rep_position = list(self._cloud[idx_points[0]])
-              rep_position[2] += 0.2
+              object_cloud = self._cloud.extract(idx_points)
+
+              # Use centroid as representative point:
+              rep_position = np.mean(
+                  object_cloud.to_array(),
+                  axis=0
+              )[:3]
+              rep_position[2] += 0.25
 
               cluster_reps.append(rep_position)
 
@@ -166,9 +172,9 @@ Here **HSV color space histogram** and **surface normal histogram** are used to 
       # Compute histogram:
       result = np.concatenate(
           (
-              np.histogram(channel_1_vals, bins=64, range=(0,256))[0],
-              np.histogram(channel_2_vals, bins=64, range=(0,256))[0],
-              np.histogram(channel_3_vals, bins=64, range=(0,256))[0]
+              np.histogram(channel_1_vals, bins=32, range=(0,256))[0],
+              np.histogram(channel_2_vals, bins=32, range=(0,256))[0],
+              np.histogram(channel_3_vals, bins=32, range=(0,256))[0]
           )
       ).astype(np.float64)
 
@@ -196,9 +202,9 @@ Here **HSV color space histogram** and **surface normal histogram** are used to 
       # Compute histogram:
       result = np.concatenate(
           (
-              np.histogram(norm_x_vals, bins=64, range=(-1.0,+1.0))[0],
-              np.histogram(norm_y_vals, bins=64, range=(-1.0,+1.0))[0],
-              np.histogram(norm_z_vals, bins=64, range=(-1.0,+1.0))[0]
+              np.histogram(norm_x_vals, bins=32, range=(-1.0,+1.0))[0],
+              np.histogram(norm_y_vals, bins=32, range=(-1.0,+1.0))[0],
+              np.histogram(norm_z_vals, bins=32, range=(-1.0,+1.0))[0]
           )
       ).astype(np.float64)
 
@@ -232,6 +238,11 @@ And its performance are as follows:
 
 Here are the classifier's output labels in the three test cases:
 
-1. Test World 1
-2. Test World 2
-3. Test World 3
+1. Test World 1, **100% (3/3)** objects, request as YAML: <a href="config/output_1.yaml">output_1.yaml</a>
+<img src="writeup_images/06-world-1.png" width="100%" alt="Test World 1"/>
+
+2. Test World 2, **80% (4/5)** objects, request as YAML: <a href="config/output_2.yaml">output_2.yaml</a>
+<img src="writeup_images/06-world-2.png" width="100%" alt="Test World 2"/>
+
+3. Test World 3, **87.5% (7/8)** objects, request as YAML: <a href="config/output_3.yaml">output_3.yaml</a>
+<img src="writeup_images/06-world-3.png" width="100%" alt="Test World 3"/>
