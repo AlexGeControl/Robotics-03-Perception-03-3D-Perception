@@ -238,11 +238,11 @@ And its performance are as follows:
 
 Here are the classifier's output labels in the three test cases:
 
-1. Test World 1, **100% (3/3)** objects, request as YAML: <a href="config/output_1.yaml">output_1.yaml</a>
+1. Test World 1, **100% (3/3)** objects, request as YAML: <a href="pr2_robot/config/output_1.yaml">output_1.yaml</a>
 <img src="writeup_images/06-world-1.png" width="100%" alt="Test World 1"/>
 
-2. Test World 2, **80% (4/5)** objects, request as YAML: <a href="config/output_2.yaml">output_2.yaml</a>
+2. Test World 2, **80% (4/5)** objects, request as YAML: <a href="pr2_robot/config/output_2.yaml">output_2.yaml</a>
 <img src="writeup_images/06-world-2.png" width="100%" alt="Test World 2"/>
 
-3. Test World 3, **87.5% (7/8)** objects, request as YAML: <a href="config/output_3.yaml">output_3.yaml</a>
+3. Test World 3, **87.5% (7/8)** objects, request as YAML: <a href="pr2_robot/config/output_3.yaml">output_3.yaml</a>
 <img src="writeup_images/06-world-3.png" width="100%" alt="Test World 3"/>
