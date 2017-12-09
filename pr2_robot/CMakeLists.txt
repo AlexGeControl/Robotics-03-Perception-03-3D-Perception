@@ -22,6 +22,8 @@ find_package(catkin REQUIRED COMPONENTS
   roscpp
   rospy
   roslint
+	genmsg
+	std_msgs
   sensor_msgs
 )
 find_package(Eigen3 REQUIRED)
@@ -61,15 +63,17 @@ find_package(Boost REQUIRED)
 ##   * add every package in MSG_DEP_SET to generate_messages(DEPENDENCIES ...)
 
 ## Generate messages in the 'msg' folder
-# add_message_files(
-#   FILES
-#   Message1.msg
-#   Message2.msg
-# )
+add_message_files(
+  FILES
+  DetectedObject.msg
+  DetectedObjectsArray.msg
+)
 
 ## Generate services in the 'srv' folder
 add_service_files(
   FILES
+	GetFloatArrayFeature.srv
+	GetNormals.srv
   PickPlace.srv
 	Grasp.srv
 )
@@ -85,6 +89,7 @@ add_service_files(
 generate_messages(
  DEPENDENCIES
  std_msgs
+ sensor_msgs
  geometry_msgs
 )
 
@@ -148,6 +153,7 @@ include_directories(include ${Boost_INCLUDE_DIRS} ${catkin_INCLUDE_DIRS} ${EIGEN
 add_executable(pr2_motion src/pr2_motion.cpp)
 add_executable(pr2_pick_place_server src/pr2_pick_place_server.cpp)
 add_executable(pr2_cloud_transformer src/pr2_cloud_transformer.cpp)
+add_executable(pr2_feature_extractor src/pr2_feature_extractor.cpp)
 
 ## Rename C++ executable without prefix
 ## The above recommended prefix causes long target names, the following renames the
@@ -165,6 +171,7 @@ add_dependencies(pr2_cloud_transformer ${${PROJECT_NAME}_EXPORTED_TARGETS} ${cat
 target_link_libraries(pr2_motion ${catkin_LIBRARIES})
 target_link_libraries(pr2_pick_place_server ${catkin_LIBRARIES})
 target_link_libraries(pr2_cloud_transformer ${catkin_LIBRARIES})
+target_link_libraries(pr2_feature_extractor ${catkin_LIBRARIES})
 
 #############
 ## Install ##

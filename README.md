@@ -1,106 +1,237 @@
-[![Udacity - Robotics NanoDegree Program](https://s3-us-west-1.amazonaws.com/udacity-robotics/Extra+Images/RoboND_flag.png)](https://www.udacity.com/robotics)
-# 3D Perception
-Before starting any work on this project, please complete all steps for [Exercise 1, 2 and 3](https://github.com/udacity/RoboND-Perception-Exercises). At the end of Exercise-3 you have a pipeline that can identify points that belong to a specific object.
+# Perception: Pick & Place
 
-In this project, you must assimilate your work from previous exercises to successfully complete a tabletop pick and place operation using PR2.
+---
 
-The PR2 has been outfitted with an RGB-D sensor much like the one you used in previous exercises. This sensor however is a bit noisy, much like real sensors.
+## Perception Pipeline Implementation
 
-Given the cluttered tabletop scenario, you must implement a perception pipeline using your work from Exercises 1,2 and 3 to identify target objects from a so-called “Pick-List” in that particular order, pick up those objects and place them in corresponding dropboxes.
+### 1. PCL Filtering & RANSAC Plane Segmentation
 
-# Project Setup
-For this setup, catkin_ws is the name of active ROS Workspace, if your workspace name is different, change the commands accordingly
-If you do not have an active ROS workspace, you can create one by:
+The filtering stage is implemented as follows:
 
-```sh
-$ mkdir -p ~/catkin_ws/src
-$ cd ~/catkin_ws/
-$ catkin_make
+1. Downsample the PCL using <a href="pr2_robot/scripts/pcl_processing/pcl_filter.py">VoxelFilter</a>
+2. Extract ROI using <a href="pr2_robot/scripts/pcl_processing/pcl_filter.py">PassThroughFilter</a>. The params can be determined inside RViz using select tool.
+<img src="writeup_images/01-ROI.png" width="100%" alt="PCL ROI"/>
+3. Denoise the PCL using <a href="pr2_robot/scripts/pcl_processing/pcl_filter.py">OutlierFilter</a>
+<img src="writeup_images/02-denoised.png" width="100%" alt="PCL Global Denoised"/>
+4. Segment the table using <a href="pr2_robot/scripts/pcl_processing/pcl_segmenter.py">PlaneSegmenter</a>
+<img src="writeup_images/03-segmented-table.png" width="100%" alt="PCL Table"/>
+5. Denoise the objects PCL again using <a href="pr2_robot/scripts/pcl_processing/pcl_filter.py">OutlierFilter</a>
+<img src="writeup_images/03-segmented-objects.png" width="100%" alt="PCL Objects"/>
+
+The below snippet is corresponding Python implementation:
+
+```python
+  # 1. Voxel grid downsampling
+  downsampler = VoxelFilter(
+      pcl_original,
+      0.005                               # Voxel dimension
+  )
+  pcl_downsampled = downsampler.filter()
+
+  # 2. PassThrough filter
+  pcl_roi = pcl_downsampled
+  for axis_name, axis_range in zip(
+      ('z', 'y', 'x'),
+      (
+          [+0.60, +1.20],                 # Upper & lower bounds along z
+          [-0.50, +0.50],                 # Upper & lower bounds along y
+          [+0.33, +0.90],                 # Upper & lower bounds along x
+      )
+  ):
+      roi_filter = PassThroughFilter(
+          pcl_roi,
+          axis_name,
+          axis_range
+      )
+      pcl_roi = roi_filter.filter()
+
+  # 3. Outlier filter:
+  outlier_filter = OutlierFilter(
+      pcl_roi,
+      k = 50,                             # Number of neighbors for distance sampling
+      factor = 1                          # Standard deviation factor
+  )
+  pcl_denoised = outlier_filter.filter()
+
+  # 4. RANSAC plane segmentation
+  plane_segmenter = PlaneSegmenter(
+      pcl_denoised,
+      0.005                               # Max distance for plane segmentation
+  )
+  (idx_table, normal_table) = plane_segmenter.segment()
+
+  # 4. Extract objects:
+  pcl_objects = pcl_denoised.extract(idx_table, negative=True)
+
+  # 5. Outlier filter:
+  outlier_filter = OutlierFilter(
+      pcl_objects,
+      k = 25,                            # Number of neighbors for distance sampling
+      factor = 1                         # Standard deviation factor
+  )
+  pcl_objects = outlier_filter.filter()
 ```
 
-Now that you have a workspace, clone or download this repo into the src directory of your workspace:
-```sh
-$ cd ~/catkin_ws/src
-$ git clone https://github.com/udacity/RoboND-Perception-Project.git
+Here all the filters & segmenters are implemented as classes inside my <a href="pr2_robot/scripts/pcl_processing">pcl_processing</a> Python lib
+
+### 2. Object Localization
+
+Separate objects are localized using the following <a href="pr2_robot/scripts/pcl_processing/pcl_segmenter.py">EuclideanSegmenter</a>
+
+```python
+  class EuclideanSegmenter():
+      """ Segment PCL using DBSCAN
+      """
+      def __init__(
+          self,
+          cloud,
+          eps = 0.001, min_samples = 10, max_samples = 250
+      ):
+          """ Instantiate Euclidean segmenter
+          """
+          # 1. Convert XYZRGB to XYZ:
+          self._cloud = XYZRGB_to_XYZ(cloud)
+          self._tree = self._cloud.make_kdtree()
+
+          # 2. Set params:
+          self._eps = eps
+          self._min_samples = min_samples
+          self._max_samples = max_samples
+
+          # 3. Create segmenter:
+          self._segmenter = self._cloud.make_EuclideanClusterExtraction()
+          self._segmenter.set_ClusterTolerance(self._eps)
+          self._segmenter.set_MinClusterSize(self._min_samples)
+          self._segmenter.set_MaxClusterSize(self._max_samples)
+          self._segmenter.set_SearchMethod(self._tree)
+
+      def segment(self):
+          """ Segment objects
+          """
+          # 1. Segment objects:
+          cluster_indices = self._segmenter.Extract()
+
+          # 2. Generate positions for markers:
+          cluster_reps = []
+          for idx_points in cluster_indices:
+              rep_position = list(self._cloud[idx_points[0]])
+              rep_position[2] += 0.2
+
+              cluster_reps.append(rep_position)
+
+          return (cluster_indices, cluster_reps)
 ```
-### Note: If you have the Kinematics Pick and Place project in the same ROS Workspace as this project, please remove the 'gazebo_grasp_plugin' directory from the `RoboND-Perception-Project/` directory otherwise ignore this note. 
 
-Now install missing dependencies using rosdep install:
-```sh
-$ cd ~/catkin_ws
-$ rosdep install --from-paths src --ignore-src --rosdistro=kinetic -y
-```
-Build the project:
-```sh
-$ cd ~/catkin_ws
-$ catkin_make
-```
-Add following to your .bashrc file
-```
-export GAZEBO_MODEL_PATH=~/catkin_ws/src/RoboND-Perception-Project/pr2_robot/models:$GAZEBO_MODEL_PATH
+It is used in the callback of PCL classifier to generate PCL indices and representative points for marker labelling as follows:
+
+```python
+  object_segmenter = EuclideanSegmenter(
+      pcl_objects,
+      eps = 0.05, min_samples = 32, max_samples = 4096
+  )
+  (cluster_indices, cluster_reps) = object_segmenter.segment()
 ```
 
-If you haven’t already, following line can be added to your .bashrc to auto-source all new terminals
+Here is an illustration of the effectiveness of this object localization implementation:
+
+<img src="writeup_images/04-separate-objects.png" width="100%" alt="PCL Separate Objects"/>
+
+### 3. Feature Engineering & Classifer
+
+Here **HSV color space histogram** and **surface normal histogram** are used to extract features of object PCL.
+
+```python
+  def compute_color_histograms(cloud, using_hsv=False):
+      # Compute histograms for the clusters
+      point_colors_list = []
+
+      # Step through each point in the point cloud
+      for point in pc2.read_points(cloud, skip_nans=True):
+          rgb_list = float_to_rgb(point[3])
+          if using_hsv:
+              point_colors_list.append(rgb_to_hsv(rgb_list) * 255)
+          else:
+              point_colors_list.append(rgb_list)
+
+      # Populate lists with color values
+      channel_1_vals = []
+      channel_2_vals = []
+      channel_3_vals = []
+
+      for color in point_colors_list:
+          channel_1_vals.append(color[0])
+          channel_2_vals.append(color[1])
+          channel_3_vals.append(color[2])
+
+      # Compute histogram:
+      result = np.concatenate(
+          (
+              np.histogram(channel_1_vals, bins=64, range=(0,256))[0],
+              np.histogram(channel_2_vals, bins=64, range=(0,256))[0],
+              np.histogram(channel_3_vals, bins=64, range=(0,256))[0]
+          )
+      ).astype(np.float64)
+
+      # Normalize the result
+      result = result / np.sum(result)
+
+      return result
 ```
-source ~/catkin_ws/devel/setup.bash
+
+```python
+  def compute_normal_histograms(normal_cloud):
+      norm_x_vals = []
+      norm_y_vals = []
+      norm_z_vals = []
+
+      for norm_component in pc2.read_points(
+          normal_cloud,
+          field_names = ('normal_x', 'normal_y', 'normal_z'),
+          skip_nans=True
+      ):
+          norm_x_vals.append(norm_component[0])
+          norm_y_vals.append(norm_component[1])
+          norm_z_vals.append(norm_component[2])
+
+      # Compute histogram:
+      result = np.concatenate(
+          (
+              np.histogram(norm_x_vals, bins=64, range=(-1.0,+1.0))[0],
+              np.histogram(norm_y_vals, bins=64, range=(-1.0,+1.0))[0],
+              np.histogram(norm_z_vals, bins=64, range=(-1.0,+1.0))[0]
+          )
+      ).astype(np.float64)
+
+      # Normalize the result
+      result = result / np.sum(result)
+
+      return result
 ```
 
-To run the demo:
-```sh
-$ cd ~/catkin_ws/src/RoboND-Perception-Project/pr2_robot/scripts
-$ chmod u+x pr2_safe_spawner.sh
-$ ./pr2_safe_spawner.sh
+Here **64** bins are used for each channel, aiming to strike a balance between descriptive power and computational efficiency.
+
+Regarding to classifier, I switched from linear SVM to DNN for better classifier performance.
+Thanks for sklearn 0.19.1's upgrade of MLPClassifier, all recent advances of deep learning has been integrated to provide a stronger implmentation
+
+```python
+  clf = MLPClassifier(
+      hidden_layer_sizes = (192, 64),
+      batch_size = 512,
+      learning_rate_init = 0.05,
+      max_iter = 2048
+  )
 ```
-![demo-1](https://user-images.githubusercontent.com/20687560/28748231-46b5b912-7467-11e7-8778-3095172b7b19.png)
 
+And its performance are as follows:
 
+<img src="writeup_images/05-confusion-matrix-normalized.png" width="100%" alt="Confusion Matrix"/>
 
-Once Gazebo is up and running, make sure you see following in the gazebo world:
-- Robot
+---
 
-- Table arrangement
+## Recognition Performance
 
-- Three target objects on the table
+Here are the classifier's output labels in the three test cases:
 
-- Dropboxes on either sides of the robot
-
-
-If any of these items are missing, please report as an issue on [the waffle board](https://waffle.io/udacity/robotics-nanodegree-issues).
-
-In your RViz window, you should see the robot and a partial collision map displayed:
-
-![demo-2](https://user-images.githubusercontent.com/20687560/28748286-9f65680e-7468-11e7-83dc-f1a32380b89c.png)
-
-Proceed through the demo by pressing the ‘Next’ button on the RViz window when a prompt appears in your active terminal
-
-The demo ends when the robot has successfully picked and placed all objects into respective dropboxes (though sometimes the robot gets excited and throws objects across the room!)
-
-Close all active terminal windows using **ctrl+c** before restarting the demo.
-
-You can launch the project scenario like this:
-```sh
-$ roslaunch pr2_robot pick_place_project.launch
-```
-# Required Steps for a Passing Submission:
-1. Extract features and train an SVM model on new objects (see `pick_list_*.yaml` in `/pr2_robot/config/` for the list of models you'll be trying to identify). 
-2. Write a ROS node and subscribe to `/pr2/world/points` topic. This topic contains noisy point cloud data that you must work with.
-3. Use filtering and RANSAC plane fitting to isolate the objects of interest from the rest of the scene.
-4. Apply Euclidean clustering to create separate clusters for individual items.
-5. Perform object recognition on these objects and assign them labels (markers in RViz).
-6. Calculate the centroid (average in x, y and z) of the set of points belonging to that each object.
-7. Create ROS messages containing the details of each object (name, pick_pose, etc.) and write these messages out to `.yaml` files, one for each of the 3 scenarios (`test1-3.world` in `/pr2_robot/worlds/`).  See the example `output.yaml` for details on what the output should look like.  
-8. Submit a link to your GitHub repo for the project or the Python code for your perception pipeline and your output `.yaml` files (3 `.yaml` files, one for each test world).  You must have correctly identified 100% of objects from `pick_list_1.yaml` for `test1.world`, 80% of items from `pick_list_2.yaml` for `test2.world` and 75% of items from `pick_list_3.yaml` in `test3.world`.
-9. Congratulations!  Your Done!
-
-# Extra Challenges: Complete the Pick & Place
-7. To create a collision map, publish a point cloud to the `/pr2/3d_map/points` topic and make sure you change the `point_cloud_topic` to `/pr2/3d_map/points` in `sensors.yaml` in the `/pr2_robot/config/` directory. This topic is read by Moveit!, which uses this point cloud input to generate a collision map, allowing the robot to plan its trajectory.  Keep in mind that later when you go to pick up an object, you must first remove it from this point cloud so it is removed from the collision map!
-8. Rotate the robot to generate collision map of table sides. This can be accomplished by publishing joint angle value(in radians) to `/pr2/world_joint_controller/command`
-9. Rotate the robot back to its original state.
-10. Create a ROS Client for the “pick_place_routine” rosservice.  In the required steps above, you already created the messages you need to use this service. Checkout the [PickPlace.srv](https://github.com/udacity/RoboND-Perception-Project/tree/master/pr2_robot/srv) file to find out what arguments you must pass to this service.
-11. If everything was done correctly, when you pass the appropriate messages to the `pick_place_routine` service, the selected arm will perform pick and place operation and display trajectory in the RViz window
-12. Place all the objects from your pick list in their respective dropoff box and you have completed the challenge!
-13. Looking for a bigger challenge?  Load up the `challenge.world` scenario and see if you can get your perception pipeline working there!
-
-For all the step-by-step details on how to complete this project see the [RoboND 3D Perception Project Lesson](https://classroom.udacity.com/nanodegrees/nd209/parts/586e8e81-fc68-4f71-9cab-98ccd4766cfe/modules/e5bfcfbd-3f7d-43fe-8248-0c65d910345a/lessons/e3e5fd8e-2f76-4169-a5bc-5a128d380155/concepts/802deabb-7dbb-46be-bf21-6cb0a39a1961)
-Note: The robot is a bit moody at times and might leave objects on the table or fling them across the room :D
-As long as your pipeline performs succesful recognition, your project will be considered successful even if the robot feels otherwise!
+1. Test World 1
+2. Test World 2
+3. Test World 3
